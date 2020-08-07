@@ -44,16 +44,25 @@ echo "listing commits on $DEFAULT_BRANCH to ${FILE_FILESTATUS}"
 git log --no-renames -m --first-parent --name-status --topo-order --format='%H%x09%ct%x09%P' $DEFAULT_BRANCH | gawk 'BEGIN {OFS="\t"} NR == 1 {next_master=$1;last_master=$1} next_master != "" && $1 == next_master { next_master = $3; last_master=$1} $1 ~ /^[a-f0-9]{40}$/ {last_commit = $1} NF > 0 && $1 !~ /^[a-f0-9]{40}$/ { print last_master, last_commit, $0}' | pv > ${FILE_FILESTATUS}
 
 #exclude external files and documentation
+echo "filtering external/3rd party files and documentation..."
 if [ -z "$FILE_EXCLUDE_PATHS" ]; then
     cat ${FILE_FILESTATUS} | cut -f 4 | LC_ALL=C sort -u > ${FILE_FILELIST}
 else
     cat <(cat ${FILE_FILESTATUS} | cut -f 4) <(cat ${FILE_FILESTATUS} | cut -f5) |\
         LC_ALL=C sort -u |\
-        gawk 'BEGIN {n=0} FNR==NR {excluderegex = $0} FNR!=NR { if($1 !~ excluderegex) {print $1}}' <(cat ${FILE_EXCLUDE_PATHS} | tr '\n' '|' | sed 's/|$//') - > ${FILE_FILELIST}
+        gawk 'BEGIN {n=0} FNR==NR {excluderegex = $0} FNR!=NR { if($1 !~ excluderegex) {print $1}}' <(cat ${FILE_EXCLUDE_PATHS} | tr '\n' '|' | sed 's/|$//') - | grep -v '^$' > ${FILE_FILELIST} || true
 fi
 
+echo "checking if any files remain..."
+if [ ! -s "${FILE_FILELIST}" ]; then
+    echo "after dropping excluded files, nothing left to analyze"
+    unique_files=$(cat <(cat ${FILE_FILESTATUS} | cut -f 4) <(cat ${FILE_FILESTATUS} | cut -f 5) | sort -u | wc -l)
+    echo "${unique_files} unique files before filtering"
+    exit 1
+fi
 
 #get some metadata
+echo "getting commit dates..."
 git log --no-renames --first-parent --topo-order --format='%H%x09%ct%x09%P%x09%t%x09%s' $DEFAULT_BRANCH | cut -f 1,2 | LC_ALL=C sort -u > ${FILE_COMMIT_DATES}
 
 # create the list of commits
@@ -64,6 +73,13 @@ pv ${FILE_FILESTATUS} | ag -v 'actionpack/test/fixtures/public/foo' |\
     gawk -F\\t 'BEGIN {OFS="\t"} FNR==NR {allow[$1]=1} FNR != NR {if($3 ~ /R[0-9][0-9][0-9]/) { if(allow[$4]) {print $1, $2, $3, $4;} if(allow[$5]) {print $1, $2, $3, $5;} } else if(allow[$4]) {print $0} }'\
         ${FILE_FILELIST} - |\
      tac | LC_ALL=C sort -k4 -s | uniq > ${FILE_COMMITS}
+
+if [ ! -s ${FILE_COMMITS} ]; then
+    echo "no commits found for files, nothing to analyze"
+    unique_files=$(cat ${FILE_FILELIST} | grep -v '^$'  | wc -l)
+    echo "${unique_files} files passed filtering for history"
+    exit 1
+fi
 
 #TODO: sampling commits goes here (sample files and then get all related commits?)
 
